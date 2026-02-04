@@ -5,7 +5,6 @@ A professional application for face scanning, mask recommendation, and fit testi
 
 import streamlit as st
 import cv2
-import mediapipe as mp
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -18,6 +17,20 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib import colors
 import tempfile
+
+# Import MediaPipe with version compatibility handling
+try:
+    import mediapipe as mp
+    mp_face_mesh = mp.solutions.face_mesh
+    mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+except AttributeError:
+    # For newer MediaPipe versions
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+    mp_face_mesh = vision.FaceLandmarker
+    mp_drawing = None
+    mp_drawing_styles = None
 
 # Page configuration
 st.set_page_config(
@@ -165,9 +178,10 @@ class FaceMeasurement:
     """Class to handle face measurement using MediaPipe"""
     
     def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        # Use globally imported MediaPipe modules
+        self.mp_face_mesh = mp_face_mesh
+        self.mp_drawing = mp_drawing
+        self.mp_drawing_styles = mp_drawing_styles
         
     def process_image(self, image):
         """Process image and extract facial measurements"""
@@ -193,13 +207,22 @@ class FaceMeasurement:
             
             # Draw landmarks on image for visualization
             annotated_image = image.copy()
-            self.mp_drawing.draw_landmarks(
-                image=annotated_image,
-                landmark_list=results.multi_face_landmarks[0],
-                connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                landmark_drawing_spec=None,
-                connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
-            )
+            
+            if self.mp_drawing and self.mp_drawing_styles:
+                # Use MediaPipe drawing utilities if available
+                self.mp_drawing.draw_landmarks(
+                    image=annotated_image,
+                    landmark_list=results.multi_face_landmarks[0],
+                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                )
+            else:
+                # Fallback: draw simple landmarks manually
+                for landmark in landmarks:
+                    x = int(landmark.x * w)
+                    y = int(landmark.y * h)
+                    cv2.circle(annotated_image, (x, y), 1, (0, 255, 0), -1)
             
             return measurements, annotated_image
     
