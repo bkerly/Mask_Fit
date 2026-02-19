@@ -50,28 +50,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS - only for custom boxes, let Streamlit handle the rest
 st.markdown("""
 <style>
-    /* Force light mode */
-    .stApp {
-        background-color: #ffffff;
-        color: #262730;
-    }
-    
-    .main-header {
-        font-size: 2.5rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-        font-weight: 600;
-    }
-    .step-header {
-        font-size: 1.8rem;
-        color: #2ca02c;
-        margin-top: 1rem;
-        font-weight: 600;
-    }
+    /* Info boxes only */
     .info-box {
         background-color: #e8f4f8;
         padding: 1.5rem;
@@ -80,26 +62,23 @@ st.markdown("""
         border-left: 4px solid #1f77b4;
         color: #262730;
     }
+    
     .warning-box {
         background-color: #fff3cd;
         padding: 1.5rem;
         border-radius: 0.5rem;
         border-left: 4px solid #ffc107;
-        color: #856404;
         margin: 1rem 0;
+        color: #856404;
     }
+    
     .success-box {
         background-color: #d4edda;
         padding: 1.5rem;
         border-radius: 0.5rem;
         border-left: 4px solid #28a745;
-        color: #155724;
         margin: 1rem 0;
-    }
-    
-    /* Ensure all text is readable */
-    .info-box *, .warning-box *, .success-box * {
-        color: inherit !important;
+        color: #155724;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -745,7 +724,7 @@ def generate_pdf_report(subject_name, subject_dob, measurements, recommendation,
 
 def main():
     # Header
-    st.markdown('<h1 class="main-header">NIOSH Respirator Mask Fitting System</h1>', unsafe_allow_html=True)
+    st.title("NIOSH Respirator Mask Fitting System")
     
     # Sidebar
     with st.sidebar:
@@ -826,7 +805,7 @@ def main():
 
 def show_face_scan():
     """Step 1: Face scanning interface with credit card calibration"""
-    st.markdown('<h2 class="step-header">Step 1: Face Scan with Calibration</h2>', unsafe_allow_html=True)
+    st.header("Step 1: Face Scan with Calibration")
     
     # Check if we have calibration
     if not st.session_state.calibration_factor:
@@ -1007,7 +986,7 @@ def show_face_scan():
 
 def show_analysis():
     """Step 2: Analysis and mask recommendation"""
-    st.markdown('<h2 class="step-header">Step 2: Analysis & Recommendation</h2>', unsafe_allow_html=True)
+    st.header("Step 2: Analysis & Recommendation")
     
     if not st.session_state.measurements:
         st.warning("Please complete face scan first.")
@@ -1033,22 +1012,37 @@ def show_analysis():
     with col1:
         st.markdown("### Your Facial Measurements")
         
-        # Measurements table
-        meas_data = {
-            'Measurement': [
-                'Bizygomatic Breadth',
-                'Menton-Sellion Length',
-                'Face Width',
-                'Face Length'
-            ],
-            'Value (mm)': [
-                f"{measurements['bizygomatic_breadth']:.1f}",
-                f"{measurements['menton_sellion']:.1f}",
-                f"{measurements['face_width']:.1f}",
-                f"{measurements['face_length']:.1f}"
-            ]
-        }
-        st.table(pd.DataFrame(meas_data))
+        # Use HTML table instead of dataframe for consistent styling
+        measurements_html = f"""
+        <table style="width:100%; border-collapse: collapse; background-color: white;">
+            <thead>
+                <tr style="background-color: #1f77b4; color: white;">
+                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Measurement</th>
+                    <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Value (mm)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="background-color: #f9f9f9;">
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Bizygomatic Breadth</td>
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['bizygomatic_breadth']:.1f}</td>
+                </tr>
+                <tr style="background-color: white;">
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Menton-Sellion Length</td>
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['menton_sellion']:.1f}</td>
+                </tr>
+                <tr style="background-color: #f9f9f9;">
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Face Width</td>
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['face_width']:.1f}</td>
+                </tr>
+                <tr style="background-color: white;">
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Face Length</td>
+                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['face_length']:.1f}</td>
+                </tr>
+            </tbody>
+        </table>
+        """
+        st.markdown(measurements_html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         
         # Category information
         st.markdown(f"""
@@ -1087,18 +1081,30 @@ def show_analysis():
     st.markdown("### Comparison with NIOSH Reference Headform")
     
     headform_data = NIOSH_HEADFORMS[category]
-    comparison_data = {
-        'Measurement': ['Bizygomatic Breadth', 'Menton-Sellion Length'],
-        'Your Value': [
-            f"{measurements['bizygomatic_breadth']:.1f} mm",
-            f"{measurements['menton_sellion']:.1f} mm"
-        ],
-        'Reference Range': [
-            f"{headform_data['bizygomatic_breadth'][0]}-{headform_data['bizygomatic_breadth'][1]} mm",
-            f"{headform_data['menton_sellion'][0]}-{headform_data['menton_sellion'][1]} mm"
-        ]
-    }
-    st.table(pd.DataFrame(comparison_data))
+    comparison_html = f"""
+    <table style="width:100%; border-collapse: collapse; background-color: white;">
+        <thead>
+            <tr style="background-color: #1f77b4; color: white;">
+                <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Measurement</th>
+                <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Your Value</th>
+                <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Reference Range</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="background-color: #f9f9f9;">
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Bizygomatic Breadth</td>
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['bizygomatic_breadth']:.1f} mm</td>
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{headform_data['bizygomatic_breadth'][0]}-{headform_data['bizygomatic_breadth'][1]} mm</td>
+            </tr>
+            <tr style="background-color: white;">
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Menton-Sellion Length</td>
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['menton_sellion']:.1f} mm</td>
+                <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{headform_data['menton_sellion'][0]}-{headform_data['menton_sellion'][1]} mm</td>
+            </tr>
+        </tbody>
+    </table>
+    """
+    st.markdown(comparison_html, unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
@@ -1112,7 +1118,7 @@ def show_analysis():
 
 def show_fit_test():
     """Step 3: User seal check/fit test protocol"""
-    st.markdown('<h2 class="step-header">Step 3: Respirator Fit Test Protocol</h2>', unsafe_allow_html=True)
+    st.header("Step 3: Respirator Fit Test Protocol")
     
     if not st.session_state.recommendation:
         st.warning("Please complete analysis first.")
