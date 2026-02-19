@@ -113,6 +113,10 @@ if 'recommendation' not in st.session_state:
     st.session_state.recommendation = None
 if 'captured_image' not in st.session_state:
     st.session_state.captured_image = None
+if 'calibration_image' not in st.session_state:
+    st.session_state.calibration_image = None
+if 'calibration_factor' not in st.session_state:
+    st.session_state.calibration_factor = None
 if 'subject_name' not in st.session_state:
     st.session_state.subject_name = ""
 if 'subject_dob' not in st.session_state:
@@ -184,15 +188,215 @@ ALL_MASKS = {
     ]
 }
 
+class CreditCardCalibration:
+    """Class to detect and use credit card for calibration"""
+    
+    CARD_WIDTH_MM = 85.60  # Standard credit card width
+    CARD_HEIGHT_MM = 53.98  # Standard credit card height
+    
+    @staticmethod
+    def detect_card(image):
+        """
+        Detect credit card in image and calculate pixels per mm
+        Returns calibration_factor (mm per pixel) or None if not detected
+        """
+        # Try multiple detection methods
+        
+        # Method 1: Edge detection with contours
+        calibration, rect = CreditCardCalibration._detect_by_edges(image)
+        if calibration:
+            return calibration, rect
+        
+        # Method 2: Color-based detection (lighter rectangular objects)
+        calibration, rect = CreditCardCalibration._detect_by_color(image)
+        if calibration:
+            return calibration, rect
+        
+        # Method 3: Template matching with relaxed constraints
+        calibration, rect = CreditCardCalibration._detect_relaxed(image)
+        if calibration:
+            return calibration, rect
+        
+        return None, None
+    
+    @staticmethod
+    def _detect_by_edges(image):
+        """Original edge detection method"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 30, 100)  # Lower thresholds
+        
+        # Dilate to connect broken edges
+        kernel = np.ones((3,3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return None, None
+        
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
+            peri = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.04 * peri, True)  # More tolerance
+            
+            if len(approx) >= 4 and len(approx) <= 6:  # Allow some flexibility
+                x, y, w, h = cv2.boundingRect(approx)
+                
+                # Must be reasonably sized (not too small)
+                if w < 50 or h < 30:
+                    continue
+                
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # More lenient aspect ratio checks
+                if 0.55 < aspect_ratio < 0.75:  # Vertical
+                    card_width_px = h
+                    calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                    return calibration_factor, (x, y, w, h)
+                elif 1.3 < aspect_ratio < 2.0:  # Horizontal
+                    card_width_px = w
+                    calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                    return calibration_factor, (x, y, w, h)
+        
+        return None, None
+    
+    @staticmethod
+    def _detect_by_color(image):
+        """Detect bright rectangular objects (cards are usually lighter)"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Threshold to find bright regions
+        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+        
+        # Find contours
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return None, None
+        
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Size check
+            if w < 50 or h < 30:
+                continue
+            
+            aspect_ratio = w / h if h > 0 else 0
+            
+            if 0.55 < aspect_ratio < 0.75:  # Vertical
+                card_width_px = h
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, w, h)
+            elif 1.3 < aspect_ratio < 2.0:  # Horizontal
+                card_width_px = w
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, w, h)
+        
+        return None, None
+    
+    @staticmethod
+    def _detect_relaxed(image):
+        """Most relaxed detection - find largest rectangle in center area"""
+        h, w = image.shape[:2]
+        
+        # Focus on center 80% of image
+        margin_x = int(w * 0.1)
+        margin_y = int(h * 0.1)
+        roi = image[margin_y:h-margin_y, margin_x:w-margin_x]
+        
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+        
+        # Try adaptive threshold
+        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                       cv2.THRESH_BINARY, 11, 2)
+        
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return None, None
+        
+        # Find largest contour with card-like aspect ratio
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            
+            # Adjust coordinates back to full image
+            x += margin_x
+            y += margin_y
+            
+            # Size check
+            if cw < 50 or ch < 30:
+                continue
+            
+            aspect_ratio = cw / ch if ch > 0 else 0
+            
+            # Very lenient aspect ratio
+            if 0.5 < aspect_ratio < 0.8:  # Vertical
+                card_width_px = ch
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, cw, ch)
+            elif 1.2 < aspect_ratio < 2.2:  # Horizontal
+                card_width_px = cw
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, cw, ch)
+        
+        return None, None
+    
+    @staticmethod
+    def manual_calibration(image, x1, y1, x2, y2):
+        """
+        Manual calibration if auto-detection fails
+        User clicks two corners of the card
+        """
+        width_px = abs(x2 - x1)
+        height_px = abs(y2 - y1)
+        
+        # Determine orientation
+        if width_px > height_px:
+            # Horizontal
+            calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / width_px
+        else:
+            # Vertical
+            calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / height_px
+        
+        return calibration_factor
+    
+    @staticmethod
+    def draw_card_detection(image, card_rect):
+        """Draw rectangle around detected card"""
+        if card_rect:
+            x, y, w, h = card_rect
+            annotated = image.copy()
+            cv2.rectangle(annotated, (x, y), (x+w, y+h), (0, 255, 0), 3)
+            cv2.putText(annotated, "Card Detected", (x, y-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Draw corners for emphasis
+            corner_size = 10
+            cv2.line(annotated, (x, y), (x+corner_size, y), (0, 255, 0), 3)
+            cv2.line(annotated, (x, y), (x, y+corner_size), (0, 255, 0), 3)
+            cv2.line(annotated, (x+w, y), (x+w-corner_size, y), (0, 255, 0), 3)
+            cv2.line(annotated, (x+w, y), (x+w, y+corner_size), (0, 255, 0), 3)
+            cv2.line(annotated, (x, y+h), (x+corner_size, y+h), (0, 255, 0), 3)
+            cv2.line(annotated, (x, y+h), (x, y+h-corner_size), (0, 255, 0), 3)
+            cv2.line(annotated, (x+w, y+h), (x+w-corner_size, y+h), (0, 255, 0), 3)
+            cv2.line(annotated, (x+w, y+h), (x+w, y+h-corner_size), (0, 255, 0), 3)
+            
+            return annotated
+        return image
+
+
 class FaceMeasurement:
     """Class to handle face measurement using MediaPipe"""
     
-    def __init__(self):
+    def __init__(self, calibration_factor=None):
         # Use globally imported MediaPipe modules
         self.mp_face_mesh = mp_face_mesh
         self.mp_drawing = mp_drawing
         self.mp_drawing_styles = mp_drawing_styles
         self.use_old_api = USE_OLD_API
+        # Use provided calibration or default
+        self.calibration_factor = calibration_factor if calibration_factor else (140 / 180)
         
     def process_image(self, image):
         """Process image and extract facial measurements"""
@@ -265,19 +469,15 @@ class FaceMeasurement:
         x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
         
         # Estimate measurements based on face rectangle
-        # These are approximations based on typical face proportions
         face_width_px = fw
         face_height_px = fh
         
-        # Calibration factor
-        mm_per_pixel = 140 / 180
-        
         # Approximate key measurements
         measurements = {
-            'bizygomatic_breadth': face_width_px * mm_per_pixel * 0.9,  # Face width at cheekbones
-            'menton_sellion': face_height_px * mm_per_pixel * 0.65,     # Chin to nose bridge
-            'face_width': face_width_px * mm_per_pixel,
-            'face_length': face_height_px * mm_per_pixel,
+            'bizygomatic_breadth': face_width_px * self.calibration_factor * 0.9,  # Face width at cheekbones
+            'menton_sellion': face_height_px * self.calibration_factor * 0.65,     # Chin to nose bridge
+            'face_width': face_width_px * self.calibration_factor,
+            'face_length': face_height_px * self.calibration_factor,
         }
         
         # Draw rectangle on face
@@ -298,15 +498,12 @@ class FaceMeasurement:
         return measurements, annotated_image
     
     def _calculate_distance(self, point1, point2, w, h):
-        """Calculate distance between two landmarks in mm (estimated)"""
+        """Calculate distance between two landmarks in mm"""
         x1, y1 = point1.x * w, point1.y * h
         x2, y2 = point2.x * w, point2.y * h
         pixel_distance = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
-        # Calibration factor
-        mm_per_pixel = 140 / 180
-        
-        return pixel_distance * mm_per_pixel
+        return pixel_distance * self.calibration_factor
     
     def _calculate_measurements(self, landmarks, w, h):
         """Extract key facial measurements"""
@@ -419,7 +616,8 @@ def generate_pdf_report(subject_name, subject_dob, measurements, recommendation,
         ['Name:', subject_name],
         ['Date of Birth:', subject_dob.strftime('%B %d, %Y') if subject_dob else 'Not provided'],
         ['Test Date:', datetime.now().strftime('%B %d, %Y')],
-        ['Test Time:', datetime.now().strftime('%I:%M %p')]
+        ['Test Time:', datetime.now().strftime('%I:%M %p')],
+        ['Calibration:', 'Credit Card' if st.session_state.calibration_factor and st.session_state.calibration_factor != (140/180) else 'Default']
     ]
     subject_table = Table(subject_data, colWidths=[2*inch, 4*inch])
     subject_table.setStyle(TableStyle([
@@ -556,6 +754,7 @@ def main():
         st.session_state.subject_dob = st.date_input(
             "Date of Birth",
             value=st.session_state.subject_dob,
+            min_value=datetime(1930, 1, 1).date(),
             max_value=datetime.now().date()
         )
         
@@ -626,68 +825,185 @@ def main():
         show_fit_test()
 
 def show_face_scan():
-    """Step 1: Face scanning interface"""
-    st.markdown('<h2 class="step-header">Step 1: Face Scan</h2>', unsafe_allow_html=True)
+    """Step 1: Face scanning interface with credit card calibration"""
+    st.markdown('<h2 class="step-header">Step 1: Face Scan with Calibration</h2>', unsafe_allow_html=True)
     
-    st.markdown("""
-    <div class="info-box">
-    <strong>Instructions:</strong>
-    <ul>
-        <li>Position your face directly in front of the camera</li>
-        <li>Ensure good lighting</li>
-        <li>Remove glasses and face coverings</li>
-        <li>Maintain a neutral expression</li>
-        <li>Face the camera straight on</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Camera input
-        img_file_buffer = st.camera_input("Capture your face")
-        
-        if img_file_buffer is not None:
-            # Read image
-            bytes_data = img_file_buffer.getvalue()
-            image = Image.open(io.BytesIO(bytes_data))
-            image_np = np.array(image)
-            
-            # Process image
-            with st.spinner("Analyzing facial features..."):
-                face_measurer = FaceMeasurement()
-                measurements, annotated_image = face_measurer.process_image(image_np)
-            
-            if measurements:
-                st.session_state.measurements = measurements
-                st.session_state.captured_image = annotated_image
-                st.success("Face detected and analyzed successfully")
-                
-                # Show annotated image - FIXED: use_container_width instead of use_column_width
-                st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
-                
-                if st.button("Continue to Analysis", type="primary", use_container_width=True):
-                    st.session_state.current_step = 2
-                    st.rerun()
-            else:
-                st.error("No face detected. Please try again with better lighting and positioning.")
-    
-    with col2:
-        st.markdown("### Tips for Best Results")
+    # Check if we have calibration
+    if not st.session_state.calibration_factor:
+        # Stage 1: Calibration with credit card
         st.markdown("""
-        - **Distance**: Sit about 18-24 inches from camera
-        - **Lighting**: Face a window or light source
-        - **Background**: Use a plain background if possible
-        - **Hair**: Pull hair back from face
-        - **Expression**: Keep face relaxed and neutral
-        """)
+        <div class="info-box">
+        <strong>Calibration Step - Take Photo with Credit Card</strong>
+        <ul>
+            <li>Hold a standard credit card horizontally against your nose bridge</li>
+            <li>Card should be centered on your face</li>
+            <li>Keep your eyes visible above the card</li>
+            <li>Ensure good lighting and the card is clearly visible</li>
+            <li>Keep the card flat and perpendicular to the camera</li>
+        </ul>
+        <p><strong>Why?</strong> The credit card (85.6mm wide) is used to precisely calibrate measurements for your camera.</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        if st.session_state.measurements:
-            st.markdown("### Detected Measurements")
-            measurements = st.session_state.measurements
-            st.metric("Face Width", f"{measurements['bizygomatic_breadth']:.1f} mm")
-            st.metric("Face Length", f"{measurements['menton_sellion']:.1f} mm")
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            calibration_img = st.camera_input("Capture calibration photo with credit card")
+            
+            if calibration_img is not None:
+                # Read image
+                bytes_data = calibration_img.getvalue()
+                image = Image.open(io.BytesIO(bytes_data))
+                image_np = np.array(image)
+                
+                # Show original image
+                st.image(image_np, caption="Original Image", use_container_width=True)
+                
+                # Detect credit card
+                with st.spinner("Detecting credit card (trying multiple methods)..."):
+                    calibration_factor, card_rect = CreditCardCalibration.detect_card(image_np)
+                
+                if calibration_factor:
+                    st.session_state.calibration_factor = calibration_factor
+                    st.session_state.calibration_image = image_np
+                    
+                    # Show detected card
+                    annotated = CreditCardCalibration.draw_card_detection(image_np, card_rect)
+                    st.image(annotated, caption="Credit Card Detected", use_container_width=True)
+                    
+                    # Show card dimensions
+                    x, y, w, h = card_rect
+                    st.success(f"✓ Calibration successful!")
+                    st.info(f"Detected card: {w}px × {h}px → Scale: {calibration_factor:.4f} mm/pixel")
+                    
+                    if st.button("Continue to Face Scan", type="primary", use_container_width=True):
+                        st.rerun()
+                else:
+                    st.error("Could not detect credit card automatically.")
+                    
+                    st.markdown("""
+                    **Troubleshooting Tips:**
+                    - ✓ Use a solid color card (best: white or light colored)
+                    - ✓ Hold card completely flat and horizontal
+                    - ✓ Ensure all 4 corners are visible
+                    - ✓ Bright, even lighting (no shadows on card)
+                    - ✓ Card should fill ~30-50% of image width
+                    - ✓ Keep camera steady (no motion blur)
+                    - ✓ Try moving slightly closer or farther
+                    """)
+                    
+                    # Show what it's looking for
+                    with st.expander("Show detection attempts"):
+                        gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+                        edges = cv2.Canny(gray, 30, 100)
+                        st.image(edges, caption="Edge Detection View", use_container_width=True)
+                        st.caption("The card should appear as a clear rectangle with distinct edges")
+                    
+                    # Option to skip calibration
+                    st.warning("Having trouble? You can skip calibration and use default measurements.")
+                    col_skip1, col_skip2 = st.columns(2)
+                    with col_skip1:
+                        if st.button("Skip Calibration (Use Default)", use_container_width=True):
+                            st.session_state.calibration_factor = 140 / 180  # Default
+                            st.info("Using default calibration (±10% accuracy)")
+                            st.rerun()
+                    with col_skip2:
+                        if st.button("Try Another Photo", use_container_width=True):
+                            st.rerun()
+        
+        with col2:
+            st.markdown("### Example")
+            st.markdown("""
+            Position the credit card like this:
+            
+            - Horizontal orientation
+            - Against nose bridge
+            - Eyes visible above
+            - Card centered on face
+            - Good lighting
+            
+            **Standard Credit Card:**
+            - Width: 85.6 mm
+            - Height: 54.0 mm
+            """)
+    
+    else:
+        # Stage 2: Full face scan
+        st.markdown(f"""
+        <div class="success-box">
+        <strong>Calibration Complete!</strong>
+        <p>Scale factor: {st.session_state.calibration_factor:.4f} mm/pixel</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div class="info-box">
+        <strong>Face Scan - Take Photo Without Card</strong>
+        <ul>
+            <li>Remove the credit card</li>
+            <li>Position your face directly in front of the camera</li>
+            <li>Same distance as calibration photo</li>
+            <li>Maintain neutral expression</li>
+            <li>Face the camera straight on</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Face scan input
+            face_img = st.camera_input("Capture your face")
+            
+            if face_img is not None:
+                # Read image
+                bytes_data = face_img.getvalue()
+                image = Image.open(io.BytesIO(bytes_data))
+                image_np = np.array(image)
+                
+                # Process image with calibration
+                with st.spinner("Analyzing facial features..."):
+                    face_measurer = FaceMeasurement(calibration_factor=st.session_state.calibration_factor)
+                    measurements, annotated_image = face_measurer.process_image(image_np)
+                
+                if measurements:
+                    st.session_state.measurements = measurements
+                    st.session_state.captured_image = annotated_image
+                    st.success("Face detected and analyzed successfully")
+                    
+                    # Show annotated image
+                    st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
+                    
+                    # Show measurements
+                    st.markdown("### Detected Measurements")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
+                        st.metric("Face Width", f"{measurements['face_width']:.1f} mm")
+                    with col_b:
+                        st.metric("Menton-Sellion", f"{measurements['menton_sellion']:.1f} mm")
+                        st.metric("Face Length", f"{measurements['face_length']:.1f} mm")
+                    
+                    if st.button("Continue to Analysis", type="primary", use_container_width=True):
+                        st.session_state.current_step = 2
+                        st.rerun()
+                else:
+                    st.error("No face detected. Please try again with better lighting and positioning.")
+        
+        with col2:
+            st.markdown("### Tips")
+            st.markdown("""
+            - **Same distance** as calibration photo
+            - **Good lighting** on your face
+            - **Neutral expression**
+            - **Hair pulled back**
+            - **No glasses**
+            """)
+            
+            if st.button("Recalibrate", use_container_width=True):
+                st.session_state.calibration_factor = None
+                st.session_state.calibration_image = None
+                st.rerun()
 
 def show_analysis():
     """Step 2: Analysis and mask recommendation"""
