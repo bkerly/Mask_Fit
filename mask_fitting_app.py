@@ -179,19 +179,24 @@ class CreditCardCalibration:
         Detect credit card in image and calculate pixels per mm
         Returns calibration_factor (mm per pixel) or None if not detected
         """
-        # Try multiple detection methods
+        # Try multiple detection methods in order of reliability
         
-        # Method 1: Edge detection with contours
+        # Method 1: Detect blue/colored cards specifically
+        calibration, rect = CreditCardCalibration._detect_blue_card(image)
+        if calibration:
+            return calibration, rect
+        
+        # Method 2: Edge detection with contours
         calibration, rect = CreditCardCalibration._detect_by_edges(image)
         if calibration:
             return calibration, rect
         
-        # Method 2: Color-based detection (lighter rectangular objects)
+        # Method 3: Color-based detection (lighter rectangular objects)
         calibration, rect = CreditCardCalibration._detect_by_color(image)
         if calibration:
             return calibration, rect
         
-        # Method 3: Template matching with relaxed constraints
+        # Method 4: Template matching with relaxed constraints
         calibration, rect = CreditCardCalibration._detect_relaxed(image)
         if calibration:
             return calibration, rect
@@ -199,49 +204,159 @@ class CreditCardCalibration:
         return None, None
     
     @staticmethod
-    def _detect_by_edges(image):
-        """Original edge detection method"""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 30, 100)  # Lower thresholds
+    def _detect_blue_card(image):
+        """Detect blue/colored credit cards by color"""
+        h_img, w_img = image.shape[:2]
         
-        # Dilate to connect broken edges
-        kernel = np.ones((3,3), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=1)
+        # Convert to HSV for better color detection
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Define range for blue color (adjust for different card colors)
+        # Blue range
+        lower_blue = np.array([90, 50, 50])
+        upper_blue = np.array([130, 255, 255])
+        mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+        
+        # Also try other common card colors
+        # White/light cards
+        lower_white = np.array([0, 0, 180])
+        upper_white = np.array([180, 30, 255])
+        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # Red cards
+        lower_red1 = np.array([0, 50, 50])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 50, 50])
+        upper_red2 = np.array([180, 255, 255])
+        mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+        
+        # Green cards
+        lower_green = np.array([40, 50, 50])
+        upper_green = np.array([80, 255, 255])
+        mask_green = cv2.inRange(hsv, lower_green, upper_green)
+        
+        # Combine all color masks
+        mask = mask_blue | mask_white | mask_red | mask_green
+        
+        # Clean up the mask
+        kernel = np.ones((5,5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
             return None, None
         
-        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.04 * peri, True)  # More tolerance
+        # Look for rectangular contours of appropriate size
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
             
-            if len(approx) >= 4 and len(approx) <= 6:  # Allow some flexibility
-                x, y, w, h = cv2.boundingRect(approx)
+            # SIZE CONSTRAINTS
+            if w < w_img * 0.15 or w > w_img * 0.6:
+                continue
+            if h < h_img * 0.10 or h > h_img * 0.5:
+                continue
+            
+            if w < 80 or h < 50:
+                continue
+            
+            # Reject edge rectangles
+            margin = 20
+            if x < margin or y < margin or x+w > w_img-margin or y+h > h_img-margin:
+                continue
+            
+            # Check if it's rectangular enough
+            area = cv2.contourArea(contour)
+            rect_area = w * h
+            if area / rect_area < 0.7:  # At least 70% filled
+                continue
+            
+            aspect_ratio = w / h if h > 0 else 0
+            
+            # Check aspect ratio
+            if 0.55 < aspect_ratio < 0.75:  # Vertical
+                card_width_px = h
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, w, h)
+            elif 1.3 < aspect_ratio < 2.0:  # Horizontal
+                card_width_px = w
+                calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                return calibration_factor, (x, y, w, h)
+        
+        return None, None
+    
+    @staticmethod
+    def _detect_by_edges(image):
+        """Edge detection method with size constraints - try multiple threshold levels"""
+        h_img, w_img = image.shape[:2]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        
+        # Try multiple Canny thresholds
+        threshold_pairs = [(50, 150), (30, 100), (75, 200)]
+        
+        for low_thresh, high_thresh in threshold_pairs:
+            edges = cv2.Canny(blurred, low_thresh, high_thresh)
+            
+            # Dilate to connect broken edges
+            kernel = np.ones((3,3), np.uint8)
+            edges = cv2.dilate(edges, kernel, iterations=2)
+            edges = cv2.erode(edges, kernel, iterations=1)
+            
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                continue
+            
+            for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.05 * peri, True)
                 
-                # Must be reasonably sized (not too small)
-                if w < 50 or h < 30:
-                    continue
-                
-                aspect_ratio = w / h if h > 0 else 0
-                
-                # More lenient aspect ratio checks
-                if 0.55 < aspect_ratio < 0.75:  # Vertical
-                    card_width_px = h
-                    calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
-                    return calibration_factor, (x, y, w, h)
-                elif 1.3 < aspect_ratio < 2.0:  # Horizontal
-                    card_width_px = w
-                    calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
-                    return calibration_factor, (x, y, w, h)
+                if len(approx) >= 4 and len(approx) <= 8:  # Allow some flexibility
+                    x, y, w, h = cv2.boundingRect(approx)
+                    
+                    # SIZE CONSTRAINTS - card should be 15-60% of image width
+                    if w < w_img * 0.15 or w > w_img * 0.6:
+                        continue
+                    if h < h_img * 0.10 or h > h_img * 0.5:
+                        continue
+                    
+                    # Must be reasonably sized in pixels
+                    if w < 80 or h < 50:
+                        continue
+                    
+                    # Reject if too close to image edges (likely the frame itself)
+                    margin = 30
+                    if x < margin or y < margin or x+w > w_img-margin or y+h > h_img-margin:
+                        continue
+                    
+                    # Check rectangularity
+                    area = cv2.contourArea(contour)
+                    rect_area = w * h
+                    if rect_area > 0 and area / rect_area < 0.65:  # At least 65% filled
+                        continue
+                    
+                    aspect_ratio = w / h if h > 0 else 0
+                    
+                    # Check aspect ratio
+                    if 0.55 < aspect_ratio < 0.75:  # Vertical
+                        card_width_px = h
+                        calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                        return calibration_factor, (x, y, w, h)
+                    elif 1.3 < aspect_ratio < 2.0:  # Horizontal
+                        card_width_px = w
+                        calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
+                        return calibration_factor, (x, y, w, h)
         
         return None, None
     
     @staticmethod
     def _detect_by_color(image):
         """Detect bright rectangular objects (cards are usually lighter)"""
+        h_img, w_img = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # Threshold to find bright regions
@@ -256,8 +371,18 @@ class CreditCardCalibration:
         for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
             x, y, w, h = cv2.boundingRect(contour)
             
-            # Size check
-            if w < 50 or h < 30:
+            # SIZE CONSTRAINTS
+            if w < w_img * 0.15 or w > w_img * 0.6:
+                continue
+            if h < h_img * 0.10 or h > h_img * 0.5:
+                continue
+            
+            if w < 80 or h < 50:
+                continue
+            
+            # Reject edge rectangles
+            margin = 20
+            if x < margin or y < margin or x+w > w_img-margin or y+h > h_img-margin:
                 continue
             
             aspect_ratio = w / h if h > 0 else 0
@@ -278,10 +403,11 @@ class CreditCardCalibration:
         """Most relaxed detection - find largest rectangle in center area"""
         h, w = image.shape[:2]
         
-        # Focus on center 80% of image
-        margin_x = int(w * 0.1)
-        margin_y = int(h * 0.1)
+        # Focus on center 70% of image (avoid edges where frame/wall appears)
+        margin_x = int(w * 0.15)
+        margin_y = int(h * 0.15)
         roi = image[margin_y:h-margin_y, margin_x:w-margin_x]
+        roi_h, roi_w = roi.shape[:2]
         
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (9, 9), 0)
@@ -295,21 +421,26 @@ class CreditCardCalibration:
         if not contours:
             return None, None
         
-        # Find largest contour with card-like aspect ratio
+        # Find largest contour with card-like aspect ratio in ROI
         for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
             x, y, cw, ch = cv2.boundingRect(contour)
+            
+            # SIZE CONSTRAINTS within ROI
+            if cw < roi_w * 0.2 or cw > roi_w * 0.8:  # 20-80% of ROI width
+                continue
+            if ch < roi_h * 0.15 or ch > roi_h * 0.7:  # 15-70% of ROI height
+                continue
+            
+            if cw < 80 or ch < 50:
+                continue
             
             # Adjust coordinates back to full image
             x += margin_x
             y += margin_y
             
-            # Size check
-            if cw < 50 or ch < 30:
-                continue
-            
             aspect_ratio = cw / ch if ch > 0 else 0
             
-            # Very lenient aspect ratio
+            # Check aspect ratio
             if 0.5 < aspect_ratio < 0.8:  # Vertical
                 card_width_px = ch
                 calibration_factor = CreditCardCalibration.CARD_WIDTH_MM / card_width_px
@@ -838,56 +969,106 @@ def show_face_scan():
                 # Show original image
                 st.image(image_np, caption="Original Image", use_container_width=True)
                 
-                # Detect credit card
+                # Try automatic detection
                 with st.spinner("Detecting credit card (trying multiple methods)..."):
                     calibration_factor, card_rect = CreditCardCalibration.detect_card(image_np)
                 
-                if calibration_factor:
-                    st.session_state.calibration_factor = calibration_factor
-                    st.session_state.calibration_image = image_np
-                    
-                    # Show detected card
+                # Always show manual adjustment option
+                if calibration_factor and 'force_manual' not in st.session_state:
+                    # Auto-detection succeeded
                     annotated = CreditCardCalibration.draw_card_detection(image_np, card_rect)
-                    st.image(annotated, caption="Credit Card Detected", use_container_width=True)
+                    st.image(annotated, caption="Auto-Detected Card", use_container_width=True)
                     
-                    # Show card dimensions
                     x, y, w, h = card_rect
-                    st.success(f"✓ Calibration successful!")
-                    st.info(f"Detected card: {w}px × {h}px → Scale: {calibration_factor:.4f} mm/pixel")
+                    st.success("Auto-detection successful!")
+                    st.info(f"Detected: {w}px × {h}px → Scale: {calibration_factor:.4f} mm/pixel")
                     
-                    if st.button("Continue to Face Scan", type="primary", use_container_width=True):
-                        st.rerun()
-                else:
-                    st.error("Could not detect credit card automatically.")
-                    
-                    st.markdown("""
-                    **Troubleshooting Tips:**
-                    - ✓ Use a solid color card (best: white or light colored)
-                    - ✓ Hold card completely flat and horizontal
-                    - ✓ Ensure all 4 corners are visible
-                    - ✓ Bright, even lighting (no shadows on card)
-                    - ✓ Card should fill ~30-50% of image width
-                    - ✓ Keep camera steady (no motion blur)
-                    - ✓ Try moving slightly closer or farther
-                    """)
-                    
-                    # Show what it's looking for
-                    with st.expander("Show detection attempts"):
-                        gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-                        edges = cv2.Canny(gray, 30, 100)
-                        st.image(edges, caption="Edge Detection View", use_container_width=True)
-                        st.caption("The card should appear as a clear rectangle with distinct edges")
-                    
-                    # Option to skip calibration
-                    st.warning("Having trouble? You can skip calibration and use default measurements.")
-                    col_skip1, col_skip2 = st.columns(2)
-                    with col_skip1:
-                        if st.button("Skip Calibration (Use Default)", use_container_width=True):
-                            st.session_state.calibration_factor = 140 / 180  # Default
-                            st.info("Using default calibration (±10% accuracy)")
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("✓ Use This", type="primary", use_container_width=True):
+                            st.session_state.calibration_factor = calibration_factor
+                            st.session_state.calibration_image = image_np
+                            if 'force_manual' in st.session_state:
+                                del st.session_state.force_manual
                             st.rerun()
-                    with col_skip2:
-                        if st.button("Try Another Photo", use_container_width=True):
+                    with col_btn2:
+                        if st.button("Adjust Manually", use_container_width=True):
+                            st.session_state.force_manual = True
+                            st.session_state.manual_rect = card_rect
+                            st.rerun()
+                else:
+                    # Auto-detection failed or manual mode requested
+                    if 'manual_rect' not in st.session_state:
+                        if card_rect:
+                            # Use failed detection as starting point
+                            st.session_state.manual_rect = card_rect
+                        else:
+                            # Create default rectangle
+                            h, w = image_np.shape[:2]
+                            default_w = int(w * 0.4)
+                            default_h = int(h * 0.25)
+                            default_x = (w - default_w) // 2
+                            default_y = (h - default_h) // 2
+                            st.session_state.manual_rect = (default_x, default_y, default_w, default_h)
+                    
+                    st.info("Manual calibration mode - adjust the rectangle to match your card")
+                    
+                    # Show current rectangle
+                    current_rect = st.session_state.manual_rect
+                    annotated = CreditCardCalibration.draw_card_detection(image_np, current_rect)
+                    st.image(annotated, caption="Adjust Rectangle to Match Card", use_container_width=True)
+                    
+                    # Manual adjustment sliders
+                    st.markdown("**Drag sliders to match card edges:**")
+                    
+                    img_h, img_w = image_np.shape[:2]
+                    x, y, w, h = current_rect
+                    
+                    col_adj1, col_adj2 = st.columns(2)
+                    with col_adj1:
+                        new_x = st.slider("Left Edge", 0, img_w-50, x, key="card_x")
+                        new_y = st.slider("Top Edge", 0, img_h-30, y, key="card_y")
+                    with col_adj2:
+                        new_w = st.slider("Width", 50, img_w-new_x, w, key="card_w")
+                        new_h = st.slider("Height", 30, img_h-new_y, h, key="card_h")
+                    
+                    # Update if changed
+                    new_rect = (new_x, new_y, new_w, new_h)
+                    if new_rect != current_rect:
+                        st.session_state.manual_rect = new_rect
+                        st.rerun()
+                    
+                    # Calculate calibration
+                    aspect_ratio = new_w / new_h if new_h > 0 else 0
+                    
+                    if 1.3 < aspect_ratio < 2.0:  # Horizontal
+                        manual_factor = CreditCardCalibration.CARD_WIDTH_MM / new_w
+                        orientation = "Horizontal"
+                    elif 0.55 < aspect_ratio < 0.75:  # Vertical
+                        manual_factor = CreditCardCalibration.CARD_WIDTH_MM / new_h
+                        orientation = "Vertical"
+                    else:
+                        manual_factor = CreditCardCalibration.CARD_WIDTH_MM / max(new_w, new_h)
+                        orientation = "Unknown"
+                        st.warning(f"Unusual aspect ratio ({aspect_ratio:.2f}). Standard card is 1.59:1")
+                    
+                    st.info(f"**Orientation:** {orientation} | **Aspect:** {aspect_ratio:.2f} | **Scale:** {manual_factor:.4f} mm/px")
+                    
+                    col_use, col_reset = st.columns(2)
+                    with col_use:
+                        if st.button("✓ Use This Calibration", type="primary", use_container_width=True):
+                            st.session_state.calibration_factor = manual_factor
+                            st.session_state.calibration_image = image_np
+                            if 'force_manual' in st.session_state:
+                                del st.session_state.force_manual
+                            if 'manual_rect' in st.session_state:
+                                del st.session_state.manual_rect
+                            st.rerun()
+                    with col_reset:
+                        if st.button("Skip Calibration", use_container_width=True):
+                            st.session_state.calibration_factor = 140 / 180
+                            if 'force_manual' in st.session_state:
+                                del st.session_state.force_manual
                             st.rerun()
         
         with col2:
