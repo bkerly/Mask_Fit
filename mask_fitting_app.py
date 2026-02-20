@@ -96,12 +96,19 @@ if 'calibration_image' not in st.session_state:
     st.session_state.calibration_image = None
 if 'calibration_factor' not in st.session_state:
     st.session_state.calibration_factor = None
+if 'pupillary_distance_mm' not in st.session_state:
+    st.session_state.pupillary_distance_mm = None  # Measured PD in mm from card photo
+if 'pupillary_distance_px' not in st.session_state:
+    st.session_state.pupillary_distance_px = None  # PD in pixels from face photo
 if 'subject_name' not in st.session_state:
     st.session_state.subject_name = ""
 if 'subject_dob' not in st.session_state:
     st.session_state.subject_dob = None
 if 'available_masks' not in st.session_state:
     st.session_state.available_masks = []
+
+# Average adult pupillary distance for defaults
+AVERAGE_PD_MM = 63.0  # mm (range typically 54-74mm)
 
 # NIOSH headform reference data
 NIOSH_HEADFORMS = {
@@ -507,6 +514,114 @@ class FaceMeasurement:
         self.use_old_api = USE_OLD_API
         # Use provided calibration or default
         self.calibration_factor = calibration_factor if calibration_factor else (140 / 180)
+    
+    def detect_pupils(self, image):
+        """Detect pupils and return their distance in pixels"""
+        if self.use_old_api:
+            return self._detect_pupils_old_api(image)
+        else:
+            return self._detect_pupils_opencv(image)
+    
+    def _detect_pupils_old_api(self, image):
+        """Detect pupils using MediaPipe face mesh"""
+        with self.mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5
+        ) as face_mesh:
+            
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(image_rgb)
+            
+            if not results.multi_face_landmarks:
+                return None, None
+            
+            landmarks = results.multi_face_landmarks[0].landmark
+            h, w, _ = image.shape
+            
+            # MediaPipe landmarks for pupils/eye centers:
+            # 468 = left pupil, 473 = right pupil (with refinement)
+            # Or use 33 = left eye center, 263 = right eye center (without refinement)
+            left_pupil = landmarks[468] if len(landmarks) > 468 else landmarks[33]
+            right_pupil = landmarks[473] if len(landmarks) > 473 else landmarks[263]
+            
+            # Convert to pixel coordinates
+            left_x, left_y = left_pupil.x * w, left_pupil.y * h
+            right_x, right_y = right_pupil.x * w, right_pupil.y * h
+            
+            # Calculate distance in pixels
+            pd_pixels = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
+            
+            # Draw on image for visualization
+            annotated = image.copy()
+            cv2.circle(annotated, (int(left_x), int(left_y)), 5, (0, 255, 0), -1)
+            cv2.circle(annotated, (int(right_x), int(right_y)), 5, (0, 255, 0), -1)
+            cv2.line(annotated, (int(left_x), int(left_y)), (int(right_x), int(right_y)), (0, 255, 0), 2)
+            cv2.putText(annotated, f"PD: {pd_pixels:.1f}px", 
+                       (int((left_x + right_x)/2), int((left_y + right_y)/2) - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            return pd_pixels, annotated
+    
+    def _detect_pupils_opencv(self, image):
+        """Detect eyes using OpenCV as fallback"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Detect face first
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        if len(faces) == 0:
+            return None, None
+        
+        # Get largest face
+        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+        
+        # Detect eyes within face region
+        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        face_roi = gray[y:y+h, x:x+w]
+        eyes = eye_cascade.detectMultiScale(face_roi, 1.1, 3)
+        
+        if len(eyes) < 2:
+            # Estimate based on face width (PD is typically 0.45 of face width)
+            estimated_pd = w * 0.45
+            center_y = y + h // 3
+            left_x = x + int(w * 0.3)
+            right_x = x + int(w * 0.7)
+            
+            annotated = image.copy()
+            cv2.circle(annotated, (left_x, center_y), 5, (0, 255, 255), -1)
+            cv2.circle(annotated, (right_x, center_y), 5, (0, 255, 255), -1)
+            cv2.line(annotated, (left_x, center_y), (right_x, center_y), (0, 255, 255), 2)
+            cv2.putText(annotated, f"PD: {estimated_pd:.1f}px (estimated)", 
+                       (x + w//2 - 80, center_y - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            return estimated_pd, annotated
+        
+        # Sort eyes by x coordinate
+        eyes = sorted(eyes, key=lambda e: e[0])
+        left_eye = eyes[0]
+        right_eye = eyes[-1]
+        
+        # Calculate eye centers
+        left_center_x = x + left_eye[0] + left_eye[2] // 2
+        left_center_y = y + left_eye[1] + left_eye[3] // 2
+        right_center_x = x + right_eye[0] + right_eye[2] // 2
+        right_center_y = y + right_eye[1] + right_eye[3] // 2
+        
+        pd_pixels = np.sqrt((right_center_x - left_center_x)**2 + (right_center_y - left_center_y)**2)
+        
+        annotated = image.copy()
+        cv2.circle(annotated, (left_center_x, left_center_y), 5, (0, 255, 0), -1)
+        cv2.circle(annotated, (right_center_x, right_center_y), 5, (0, 255, 0), -1)
+        cv2.line(annotated, (left_center_x, left_center_y), (right_center_x, right_center_y), (0, 255, 0), 2)
+        cv2.putText(annotated, f"PD: {pd_pixels:.1f}px", 
+                   ((left_center_x + right_center_x)//2, (left_center_y + right_center_y)//2 - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        return pd_pixels, annotated
         
     def process_image(self, image):
         """Process image and extract facial measurements"""
@@ -986,8 +1101,22 @@ def show_face_scan():
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
                         if st.button("✓ Use This", type="primary", use_container_width=True):
+                            # Step 1: Store card calibration
                             st.session_state.calibration_factor = calibration_factor
                             st.session_state.calibration_image = image_np
+                            
+                            # Step 2: Measure pupillary distance from this image
+                            with st.spinner("Measuring pupillary distance..."):
+                                face_measurer = FaceMeasurement(calibration_factor=calibration_factor)
+                                pd_pixels, pd_annotated = face_measurer.detect_pupils(image_np)
+                            
+                            if pd_pixels:
+                                st.session_state.pupillary_distance_mm = pd_pixels * calibration_factor
+                                st.success(f"✓ Pupillary Distance: {st.session_state.pupillary_distance_mm:.1f}mm")
+                            else:
+                                st.session_state.pupillary_distance_mm = AVERAGE_PD_MM
+                                st.warning(f"Using average PD: {AVERAGE_PD_MM}mm")
+                            
                             if 'force_manual' in st.session_state:
                                 del st.session_state.force_manual
                             st.rerun()
@@ -1057,8 +1186,25 @@ def show_face_scan():
                     col_use, col_reset = st.columns(2)
                     with col_use:
                         if st.button("✓ Use This Calibration", type="primary", use_container_width=True):
+                            # Step 1: Store card calibration factor
                             st.session_state.calibration_factor = manual_factor
                             st.session_state.calibration_image = image_np
+                            
+                            # Step 2: Measure pupillary distance from this image
+                            with st.spinner("Measuring pupillary distance..."):
+                                face_measurer = FaceMeasurement(calibration_factor=manual_factor)
+                                pd_pixels, pd_annotated = face_measurer.detect_pupils(image_np)
+                            
+                            if pd_pixels:
+                                # Convert PD from pixels to mm using card calibration
+                                st.session_state.pupillary_distance_mm = pd_pixels * manual_factor
+                                st.success(f"✓ Pupillary Distance: {st.session_state.pupillary_distance_mm:.1f}mm")
+                            else:
+                                # Use average if detection fails
+                                st.session_state.pupillary_distance_mm = AVERAGE_PD_MM
+                                st.warning(f"Could not detect pupils. Using average PD: {AVERAGE_PD_MM}mm")
+                            
+                            # Clean up
                             if 'force_manual' in st.session_state:
                                 del st.session_state.force_manual
                             if 'manual_rect' in st.session_state:
@@ -1067,6 +1213,7 @@ def show_face_scan():
                     with col_reset:
                         if st.button("Skip Calibration", use_container_width=True):
                             st.session_state.calibration_factor = 140 / 180
+                            st.session_state.pupillary_distance_mm = AVERAGE_PD_MM
                             if 'force_manual' in st.session_state:
                                 del st.session_state.force_manual
                             st.rerun()
@@ -1092,7 +1239,8 @@ def show_face_scan():
         st.markdown(f"""
         <div class="success-box">
         <strong>Calibration Complete!</strong>
-        <p>Scale factor: {st.session_state.calibration_factor:.4f} mm/pixel</p>
+        <p>Pupillary Distance: {st.session_state.pupillary_distance_mm:.1f}mm</p>
+        <p><em>Distance from camera doesn't matter now!</em></p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -1101,11 +1249,12 @@ def show_face_scan():
         <strong>Face Scan - Take Photo Without Card</strong>
         <ul>
             <li>Remove the credit card</li>
-            <li>Position your face directly in front of the camera</li>
-            <li>Same distance as calibration photo</li>
+            <li>Position your face comfortably (any distance is fine)</li>
             <li>Maintain neutral expression</li>
             <li>Face the camera straight on</li>
+            <li>Ensure good lighting</li>
         </ul>
+        <p><strong>Note:</strong> We'll use your pupillary distance to calibrate this photo automatically!</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -1121,43 +1270,89 @@ def show_face_scan():
                 image = Image.open(io.BytesIO(bytes_data))
                 image_np = np.array(image)
                 
-                # Process image with calibration
-                with st.spinner("Analyzing facial features..."):
-                    face_measurer = FaceMeasurement(calibration_factor=st.session_state.calibration_factor)
-                    measurements, annotated_image = face_measurer.process_image(image_np)
+                # Step 1: Detect pupillary distance in THIS image
+                with st.spinner("Detecting pupils in this image..."):
+                    face_measurer_temp = FaceMeasurement()  # No calibration yet
+                    pd_pixels_face, pd_annotated = face_measurer_temp.detect_pupils(image_np)
                 
-                if measurements:
-                    st.session_state.measurements = measurements
-                    st.session_state.captured_image = annotated_image
-                    st.success("Face detected and analyzed successfully")
+                if pd_pixels_face:
+                    # Step 2: Calculate calibration for THIS image using known PD in mm
+                    face_calibration = st.session_state.pupillary_distance_mm / pd_pixels_face
+                    st.info(f"✓ PD detected: {pd_pixels_face:.1f}px → Calibration: {face_calibration:.4f} mm/px")
                     
-                    # Show annotated image
-                    st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
+                    # Show pupil detection
+                    st.image(pd_annotated, caption="Pupil Detection", use_container_width=True)
                     
-                    # Show measurements
-                    st.markdown("### Detected Measurements")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
-                        st.metric("Face Width", f"{measurements['face_width']:.1f} mm")
-                    with col_b:
-                        st.metric("Menton-Sellion", f"{measurements['menton_sellion']:.1f} mm")
-                        st.metric("Face Length", f"{measurements['face_length']:.1f} mm")
+                    # Step 3: Measure face with THIS image's calibration
+                    with st.spinner("Measuring facial features..."):
+                        face_measurer = FaceMeasurement(calibration_factor=face_calibration)
+                        measurements, annotated_image = face_measurer.process_image(image_np)
                     
-                    if st.button("Continue to Analysis", type="primary", use_container_width=True):
-                        st.session_state.current_step = 2
-                        st.rerun()
+                    if measurements:
+                        st.session_state.measurements = measurements
+                        st.session_state.captured_image = annotated_image
+                        st.session_state.pupillary_distance_px = pd_pixels_face  # Store for record
+                        st.success("Face detected and analyzed successfully!")
+                        
+                        # Show annotated image
+                        st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
+                        
+                        # Show measurements
+                        st.markdown("### Detected Measurements")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
+                            st.metric("Face Width", f"{measurements['face_width']:.1f} mm")
+                        with col_b:
+                            st.metric("Menton-Sellion", f"{measurements['menton_sellion']:.1f} mm")
+                            st.metric("Face Length", f"{measurements['face_length']:.1f} mm")
+                        
+                        st.markdown(f"""
+                        <div class="info-box">
+                        <strong>Calibration Method:</strong><br>
+                        Card photo PD: {st.session_state.pupillary_distance_mm:.1f}mm<br>
+                        Face photo PD: {pd_pixels_face:.1f}px<br>
+                        Scale: {face_calibration:.4f} mm/px<br>
+                        <em>This eliminates distance-from-camera errors!</em>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        if st.button("Continue to Analysis", type="primary", use_container_width=True):
+                            st.session_state.current_step = 2
+                            st.rerun()
+                    else:
+                        st.error("Could not measure face. Please try again.")
                 else:
-                    st.error("No face detected. Please try again with better lighting and positioning.")
+                    st.error("Could not detect pupils in this image. Please ensure:")
+                    st.markdown("""
+                    - Eyes are clearly visible and open
+                    - Good lighting on face
+                    - Face is looking directly at camera
+                    - Try removing glasses if wearing them
+                    """)
+                    
+                    if st.button("Use Default Calibration", use_container_width=True):
+                        # Fall back to card calibration if PD detection fails
+                        with st.spinner("Analyzing with default calibration..."):
+                            face_measurer = FaceMeasurement(calibration_factor=st.session_state.calibration_factor)
+                            measurements, annotated_image = face_measurer.process_image(image_np)
+                        
+                        if measurements:
+                            st.session_state.measurements = measurements
+                            st.session_state.captured_image = annotated_image
+                            st.warning("Using card calibration (less accurate if distance changed)")
+                            st.rerun()
         
         with col2:
-            st.markdown("### Tips")
-            st.markdown("""
-            - **Same distance** as calibration photo
-            - **Good lighting** on your face
-            - **Neutral expression**
-            - **Hair pulled back**
-            - **No glasses**
+            st.markdown("### How It Works")
+            st.markdown(f"""
+            **Two-Step Calibration:**
+            
+            1. **Card Photo:** Measured your pupillary distance ({st.session_state.pupillary_distance_mm:.1f}mm)
+            
+            2. **Face Photo:** Detects PD in pixels, calculates scale
+            
+            **Benefit:** Distance doesn't matter! Move closer or farther - measurements stay accurate.
             """)
             
             if st.button("Recalibrate", use_container_width=True):
