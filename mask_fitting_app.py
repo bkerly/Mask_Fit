@@ -29,22 +29,34 @@ import tempfile
 # Import MediaPipe - handle both old and new API versions
 try:
     import mediapipe as mp
-    # Try old API first
-    if hasattr(mp, 'solutions'):
+    # Try old API first (most reliable for face mesh visualization)
+    if hasattr(mp, 'solutions') and hasattr(mp.solutions, 'face_mesh'):
         mp_face_mesh = mp.solutions.face_mesh
         mp_drawing = mp.solutions.drawing_utils
         mp_drawing_styles = mp.solutions.drawing_styles
         USE_OLD_API = True
+        print("✓ MediaPipe old API loaded successfully")
     else:
-        # New API (0.10.30+)
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-        USE_OLD_API = False
-        mp_face_mesh = None
-        mp_drawing = None
-        mp_drawing_styles = None
+        # MediaPipe 0.10.30+ removed mp.solutions
+        # Fallback to direct imports
+        try:
+            import mediapipe.python.solutions.face_mesh as face_mesh_sol
+            import mediapipe.python.solutions.drawing_utils as drawing_utils_sol
+            import mediapipe.python.solutions.drawing_styles as drawing_styles_sol
+            mp_face_mesh = face_mesh_sol
+            mp_drawing = drawing_utils_sol
+            mp_drawing_styles = drawing_styles_sol
+            USE_OLD_API = True
+            print("✓ MediaPipe loaded via python.solutions")
+        except ImportError:
+            # If that also fails, use basic fallback
+            USE_OLD_API = False
+            mp_face_mesh = None
+            mp_drawing = None
+            mp_drawing_styles = None
+            print("⚠ MediaPipe face mesh not available, using OpenCV fallback")
 except Exception as e:
-    st.error(f"MediaPipe import error: {e}")
+    print(f"⚠ MediaPipe import error: {e}")
     USE_OLD_API = False
     mp_face_mesh = None
     mp_drawing = None
@@ -712,20 +724,48 @@ class FaceMeasurement:
             'menton_sellion': face_height_px * self.calibration_factor * 0.65,     # Chin to nose bridge  
         }
         
-        # Draw rectangle on face
+        # Draw enhanced visualization (mesh-like for reassurance)
         annotated_image = image.copy()
+        
+        # Draw face outline
         cv2.rectangle(annotated_image, (x, y), (x+fw, y+fh), (0, 255, 0), 2)
         
-        # Draw key measurement points
-        # Approximate bizygomatic breadth (cheekbone width)
-        cheek_y = y + int(fh * 0.5)
-        cv2.line(annotated_image, (x, cheek_y), (x+fw, cheek_y), (0, 255, 0), 2)
-        
-        # Approximate menton-sellion length
-        chin_y = y + fh
-        nose_y = y + int(fh * 0.35)
+        # Draw facial feature grid lines
         center_x = x + fw // 2
-        cv2.line(annotated_image, (center_x, chin_y), (center_x, nose_y), (0, 255, 0), 2)
+        
+        # Horizontal lines (facial regions)
+        forehead_y = y + int(fh * 0.15)
+        eyes_y = y + int(fh * 0.35)
+        nose_y = y + int(fh * 0.50)
+        mouth_y = y + int(fh * 0.70)
+        chin_y = y + fh
+        
+        for h_y in [forehead_y, eyes_y, nose_y, mouth_y]:
+            cv2.line(annotated_image, (x, h_y), (x+fw, h_y), (0, 200, 0), 1)
+        
+        # Vertical lines (facial symmetry)
+        left_x = x + int(fw * 0.25)
+        right_x = x + int(fw * 0.75)
+        
+        cv2.line(annotated_image, (center_x, y), (center_x, y+fh), (0, 255, 0), 1)  # Center line
+        cv2.line(annotated_image, (left_x, y), (left_x, y+fh), (0, 200, 0), 1)
+        cv2.line(annotated_image, (right_x, y), (right_x, y+fh), (0, 200, 0), 1)
+        
+        # Draw key measurement lines (brighter)
+        # Bizygomatic breadth (cheekbone width)
+        cheek_y = y + int(fh * 0.50)
+        cv2.line(annotated_image, (x, cheek_y), (x+fw, cheek_y), (0, 255, 0), 3)
+        cv2.circle(annotated_image, (x, cheek_y), 6, (0, 255, 0), -1)
+        cv2.circle(annotated_image, (x+fw, cheek_y), 6, (0, 255, 0), -1)
+        
+        # Menton-sellion length (chin to nose)
+        cv2.line(annotated_image, (center_x, chin_y), (center_x, eyes_y), (0, 255, 0), 3)
+        cv2.circle(annotated_image, (center_x, chin_y), 6, (0, 255, 0), -1)  # Chin
+        cv2.circle(annotated_image, (center_x, eyes_y), 6, (0, 255, 0), -1)  # Nose bridge
+        
+        # Add labels
+        cv2.putText(annotated_image, "Bizyg", (x - 60, cheek_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(annotated_image, "Mensell", (center_x + 10, (chin_y + eyes_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         return measurements, annotated_image
     
