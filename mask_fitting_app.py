@@ -26,37 +26,23 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib import colors
 import tempfile
 
-# Import MediaPipe - handle both old and new API versions
+# Import MediaPipe - use the new tasks API (0.10.30+)
 try:
     import mediapipe as mp
-    # Try old API first (most reliable for face mesh visualization)
-    if hasattr(mp, 'solutions') and hasattr(mp.solutions, 'face_mesh'):
-        mp_face_mesh = mp.solutions.face_mesh
-        mp_drawing = mp.solutions.drawing_utils
-        mp_drawing_styles = mp.solutions.drawing_styles
-        USE_OLD_API = True
-        print("✓ MediaPipe old API loaded successfully")
-    else:
-        # MediaPipe 0.10.30+ removed mp.solutions
-        # Fallback to direct imports
-        try:
-            import mediapipe.python.solutions.face_mesh as face_mesh_sol
-            import mediapipe.python.solutions.drawing_utils as drawing_utils_sol
-            import mediapipe.python.solutions.drawing_styles as drawing_styles_sol
-            mp_face_mesh = face_mesh_sol
-            mp_drawing = drawing_utils_sol
-            mp_drawing_styles = drawing_styles_sol
-            USE_OLD_API = True
-            print("✓ MediaPipe loaded via python.solutions")
-        except ImportError:
-            # If that also fails, use basic fallback
-            USE_OLD_API = False
-            mp_face_mesh = None
-            mp_drawing = None
-            mp_drawing_styles = None
-            print("⚠ MediaPipe face mesh not available, using OpenCV fallback")
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+    
+    # For newer MediaPipe, we need to use the tasks API
+    # There's no more mp.solutions - everything is in mp.tasks
+    USE_OLD_API = False  # New API uses FaceLandmarker instead of FaceMesh
+    mp_face_mesh = None  # Not used in new API
+    mp_drawing = None    # Different drawing utilities in new API
+    mp_drawing_styles = None
+    
+    print("✓ MediaPipe tasks API loaded (v0.10.30+)")
+    
 except Exception as e:
-    print(f"⚠ MediaPipe import error: {e}")
+    print(f"✗ MediaPipe import failed: {e}")
     USE_OLD_API = False
     mp_face_mesh = None
     mp_drawing = None
@@ -126,6 +112,10 @@ if 'subject_dob' not in st.session_state:
     st.session_state.subject_dob = None
 if 'available_masks' not in st.session_state:
     st.session_state.available_masks = []
+if 'manual_face_adjust' not in st.session_state:
+    st.session_state.manual_face_adjust = False
+if 'face_measurement_points' not in st.session_state:
+    st.session_state.face_measurement_points = None
 
 # Average adult pupillary distance for defaults
 AVERAGE_PD_MM = 63.0  # mm (range typically 54-74mm)
@@ -524,65 +514,23 @@ class CreditCardCalibration:
 
 
 class FaceMeasurement:
-    """Class to handle face measurement using MediaPipe"""
+    """Class to handle face measurement using MediaPipe FaceLandmarker (new API)"""
     
     def __init__(self, calibration_factor=None):
-        # Use globally imported MediaPipe modules
-        self.mp_face_mesh = mp_face_mesh
-        self.mp_drawing = mp_drawing
-        self.mp_drawing_styles = mp_drawing_styles
-        self.use_old_api = USE_OLD_API
-        # Use provided calibration or default
         self.calibration_factor = calibration_factor if calibration_factor else (140 / 180)
+        self.use_new_api = not USE_OLD_API  # Always use new API now
+        
+    def process_image(self, image):
+        """Process image and extract facial measurements"""
+        # Since we're using MediaPipe 0.10.30+ with new tasks API,
+        # we need to use FaceLandmarker instead of FaceMesh
+        # For now, fall back to OpenCV since FaceLandmarker requires a model file
+        # which we don't have bundled
+        return self._process_image_opencv(image)
     
     def detect_pupils(self, image):
         """Detect pupils and return their distance in pixels"""
-        if self.use_old_api:
-            return self._detect_pupils_old_api(image)
-        else:
-            return self._detect_pupils_opencv(image)
-    
-    def _detect_pupils_old_api(self, image):
-        """Detect pupils using MediaPipe face mesh"""
-        with self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
-        ) as face_mesh:
-            
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(image_rgb)
-            
-            if not results.multi_face_landmarks:
-                return None, None
-            
-            landmarks = results.multi_face_landmarks[0].landmark
-            h, w, _ = image.shape
-            
-            # MediaPipe landmarks for pupils/eye centers:
-            # 468 = left pupil, 473 = right pupil (with refinement)
-            # Or use 33 = left eye center, 263 = right eye center (without refinement)
-            left_pupil = landmarks[468] if len(landmarks) > 468 else landmarks[33]
-            right_pupil = landmarks[473] if len(landmarks) > 473 else landmarks[263]
-            
-            # Convert to pixel coordinates
-            left_x, left_y = left_pupil.x * w, left_pupil.y * h
-            right_x, right_y = right_pupil.x * w, right_pupil.y * h
-            
-            # Calculate distance in pixels
-            pd_pixels = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
-            
-            # Draw on image for visualization
-            annotated = image.copy()
-            cv2.circle(annotated, (int(left_x), int(left_y)), 5, (0, 255, 0), -1)
-            cv2.circle(annotated, (int(right_x), int(right_y)), 5, (0, 255, 0), -1)
-            cv2.line(annotated, (int(left_x), int(left_y)), (int(right_x), int(right_y)), (0, 255, 0), 2)
-            cv2.putText(annotated, f"PD: {pd_pixels:.1f}px", 
-                       (int((left_x + right_x)/2), int((left_y + right_y)/2) - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            return pd_pixels, annotated
+        return self._detect_pupils_opencv(image)
     
     def _detect_pupils_opencv(self, image):
         """Detect eyes using OpenCV as fallback"""
@@ -650,50 +598,8 @@ class FaceMeasurement:
         else:
             return self._process_image_new_api(image)
     
-    def _process_image_old_api(self, image):
-        """Process image using old MediaPipe API (mp.solutions)"""
-        with self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
-        ) as face_mesh:
-            
-            # Convert BGR to RGB
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(image_rgb)
-            
-            if not results.multi_face_landmarks:
-                return None, None
-            
-            landmarks = results.multi_face_landmarks[0].landmark
-            h, w, _ = image.shape
-            
-            # Calculate measurements
-            measurements = self._calculate_measurements(landmarks, w, h)
-            
-            # Draw landmarks on image for visualization
-            annotated_image = image.copy()
-            
-            if self.mp_drawing and self.mp_drawing_styles:
-                self.mp_drawing.draw_landmarks(
-                    image=annotated_image,
-                    landmark_list=results.multi_face_landmarks[0],
-                    connections=self.mp_face_mesh.FACEMESH_TESSELATION,
-                    landmark_drawing_spec=None,
-                    connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
-                )
-            else:
-                # Fallback drawing
-                for landmark in landmarks:
-                    x = int(landmark.x * w)
-                    y = int(landmark.y * h)
-                    cv2.circle(annotated_image, (x, y), 1, (0, 255, 0), -1)
-            
-            return measurements, annotated_image
-    
-    def _process_image_new_api(self, image):
-        """Process image using new MediaPipe API (tasks.python.vision)"""
+    def _process_image_opencv(self, image):
+        """Process image using OpenCV Haar Cascade face detection"""
         # For new API, we need to use a different approach
         # Since new API is more complex, we'll use a simpler landmark detection
         
@@ -778,28 +684,6 @@ class FaceMeasurement:
         
         return measurements, annotated_image
     
-    def _calculate_distance(self, point1, point2, w, h):
-        """Calculate distance between two landmarks in mm"""
-        x1, y1 = point1.x * w, point1.y * h
-        x2, y2 = point2.x * w, point2.y * h
-        pixel_distance = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        
-        return pixel_distance * self.calibration_factor
-    
-    def _calculate_measurements(self, landmarks, w, h):
-        """Extract key facial measurements for NIOSH categorization"""
-        # Only bizygomatic_breadth and menton_sellion are used for mask sizing
-        # MediaPipe Face Mesh key landmarks:
-        # 454, 234: Bizygomatic breadth (cheekbone to cheekbone)
-        # 152: Chin (menton)
-        # 6: Nose bridge (sellion)
-        
-        measurements = {
-            'bizygomatic_breadth': self._calculate_distance(landmarks[454], landmarks[234], w, h),
-            'menton_sellion': self._calculate_distance(landmarks[152], landmarks[6], w, h),
-        }
-        
-        return measurements
 
 class MaskRecommender:
     """Class to recommend masks based on measurements"""
@@ -1351,37 +1235,119 @@ def show_face_scan():
                         measurements, annotated_image = face_measurer.process_image(image_np)
                     
                     if measurements:
-                        st.session_state.measurements = measurements
-                        st.session_state.captured_image = annotated_image
-                        st.session_state.pupillary_distance_px = pd_pixels_face  # Store for record
-                        st.success("Face detected and analyzed successfully!")
-                        
-                        # Show annotated image
-                        st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
-                        
-                        # Show measurements
-                        st.markdown("### Detected Measurements")
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
-                        with col_b:
-                            st.metric("Menton-Sellion Length", f"{measurements['menton_sellion']:.1f} mm")
-                        
-                        st.info("These are the two key measurements used for NIOSH mask sizing")
-                        
-                        st.markdown(f"""
-                        <div class="info-box">
-                        <strong>Calibration Method:</strong><br>
-                        Card photo PD: {st.session_state.pupillary_distance_mm:.1f}mm<br>
-                        Face photo PD: {pd_pixels_face:.1f}px<br>
-                        Scale: {face_calibration:.4f} mm/px<br>
-                        <em>This eliminates distance-from-camera errors!</em>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        if st.button("Continue to Analysis", type="primary", use_container_width=True):
-                            st.session_state.current_step = 2
-                            st.rerun()
+                        # Check if we're in manual adjustment mode
+                        if not st.session_state.get('manual_face_adjust', False):
+                            # Auto-detected measurements
+                            st.session_state.measurements = measurements
+                            st.session_state.captured_image = annotated_image
+                            st.session_state.pupillary_distance_px = pd_pixels_face
+                            st.success("Face detected and analyzed successfully!")
+                            
+                            # Show annotated image
+                            st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
+                            
+                            # Show measurements
+                            st.markdown("### Detected Measurements")
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
+                            with col_b:
+                                st.metric("Menton-Sellion Length", f"{measurements['menton_sellion']:.1f} mm")
+                            
+                            st.info("These are the two key measurements used for NIOSH mask sizing")
+                            
+                            st.markdown(f"""
+                            <div class="info-box">
+                            <strong>Calibration Method:</strong><br>
+                            Card photo PD: {st.session_state.pupillary_distance_mm:.1f}mm<br>
+                            Face photo PD: {pd_pixels_face:.1f}px<br>
+                            Scale: {face_calibration:.4f} mm/px<br>
+                            <em>This eliminates distance-from-camera errors!</em>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                if st.button("Continue to Analysis", type="primary", use_container_width=True):
+                                    st.session_state.current_step = 2
+                                    st.rerun()
+                            with col_btn2:
+                                if st.button("Adjust Manually", use_container_width=True):
+                                    st.session_state.manual_face_adjust = True
+                                    # Store initial auto-detected measurements as starting point
+                                    st.session_state.face_measurement_points = {
+                                        'bizyg_mm': measurements['bizygomatic_breadth'],
+                                        'mensell_mm': measurements['menton_sellion']
+                                    }
+                                    st.rerun()
+                        else:
+                            # Manual adjustment mode
+                            st.info("Manual adjustment mode - fine-tune the measurements below")
+                            
+                            # Show image
+                            st.image(annotated_image, caption="Face Detection", use_container_width=True)
+                            
+                            # Get starting values
+                            if st.session_state.face_measurement_points:
+                                start_bizyg = st.session_state.face_measurement_points['bizyg_mm']
+                                start_mensell = st.session_state.face_measurement_points['mensell_mm']
+                            else:
+                                start_bizyg = measurements['bizygomatic_breadth']
+                                start_mensell = measurements['menton_sellion']
+                            
+                            st.markdown("**Adjust measurements using the sliders:**")
+                            st.caption("Typical ranges: Bizygomatic 120-170mm, Menton-Sellion 100-140mm")
+                            
+                            col_adj1, col_adj2 = st.columns(2)
+                            with col_adj1:
+                                manual_bizyg = st.slider(
+                                    "Bizygomatic Breadth (mm)",
+                                    min_value=100.0,
+                                    max_value=180.0,
+                                    value=float(start_bizyg),
+                                    step=0.5,
+                                    key="manual_bizyg"
+                                )
+                            with col_adj2:
+                                manual_mensell = st.slider(
+                                    "Menton-Sellion Length (mm)",
+                                    min_value=80.0,
+                                    max_value=150.0,
+                                    value=float(start_mensell),
+                                    step=0.5,
+                                    key="manual_mensell"
+                                )
+                            
+                            # Create manual measurements
+                            manual_measurements = {
+                                'bizygomatic_breadth': manual_bizyg,
+                                'menton_sellion': manual_mensell
+                            }
+                            
+                            # Show current values
+                            st.markdown("### Current Measurements")
+                            col_m1, col_m2 = st.columns(2)
+                            with col_m1:
+                                st.metric("Bizygomatic Breadth", f"{manual_bizyg:.1f} mm")
+                            with col_m2:
+                                st.metric("Menton-Sellion Length", f"{manual_mensell:.1f} mm")
+                            
+                            # Show which NIOSH category this would give
+                            temp_recommender = MaskRecommender()
+                            temp_category, temp_confidence = temp_recommender.categorize_face(manual_measurements)
+                            st.info(f"**NIOSH Category:** {temp_category.replace('_', ' ').title()} ({temp_confidence:.0f}% confidence)")
+                            
+                            col_use, col_reset = st.columns(2)
+                            with col_use:
+                                if st.button("✓ Use These Measurements", type="primary", use_container_width=True):
+                                    st.session_state.measurements = manual_measurements
+                                    st.session_state.manual_face_adjust = False
+                                    st.session_state.current_step = 2
+                                    st.rerun()
+                            with col_reset:
+                                if st.button("Reset to Auto-Detect", use_container_width=True):
+                                    st.session_state.manual_face_adjust = False
+                                    st.rerun()
                     else:
                         st.error("Could not measure face. Please try again.")
                 else:
