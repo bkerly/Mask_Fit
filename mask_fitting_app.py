@@ -1,6 +1,14 @@
 """
 NIOSH Respirator Mask Fitting System
 A professional application for face scanning, mask recommendation, and fit testing
+
+Copyright (c) 2026. All Rights Reserved.
+Patent Pending
+
+PROPRIETARY AND CONFIDENTIAL
+This software contains proprietary information protected by copyright and patent law.
+Unauthorized use, reproduction, or distribution is strictly prohibited.
+For licensing information, contact: [Your Contact Information]
 """
 
 import streamlit as st
@@ -732,10 +740,18 @@ class FaceMeasurement:
     
     def _calculate_measurements(self, landmarks, w, h):
         """Extract key facial measurements"""
+        # MediaPipe Face Mesh key landmarks:
+        # 454, 234: Bizygomatic breadth (cheekbone to cheekbone - widest part)
+        # 127, 356: Face outline at eye level (slightly wider than bizygomatic)
+        # 152: Chin (menton)
+        # 6: Nose bridge/sellion
+        # 10: Forehead top
+        # 152 to 10: Full face length (chin to forehead)
+        
         measurements = {
             'bizygomatic_breadth': self._calculate_distance(landmarks[454], landmarks[234], w, h),
             'menton_sellion': self._calculate_distance(landmarks[152], landmarks[6], w, h),
-            'face_width': self._calculate_distance(landmarks[454], landmarks[234], w, h),
+            'face_width': self._calculate_distance(landmarks[127], landmarks[356], w, h),  # Wider measurement
             'face_length': self._calculate_distance(landmarks[152], landmarks[10], w, h),
         }
         
