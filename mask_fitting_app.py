@@ -593,10 +593,8 @@ class FaceMeasurement:
         
     def process_image(self, image):
         """Process image and extract facial measurements"""
-        if self.use_old_api:
-            return self._process_image_old_api(image)
-        else:
-            return self._process_image_new_api(image)
+        # Always use OpenCV for now (MediaPipe new API requires model file)
+        return self._process_image_opencv(image)
     
     def _process_image_opencv(self, image):
         """Process image using OpenCV Haar Cascade face detection"""
@@ -960,7 +958,7 @@ def main():
         }
         
         for step_num, step_name in steps.items():
-            if st.button(step_name, key=f"nav_{step_num}", use_container_width=True):
+            if st.button(step_name, key=f"nav_{step_num}", width="stretch"):
                 st.session_state.current_step = step_num
         
         st.markdown("---")
@@ -972,7 +970,7 @@ def main():
         **Data Source:** NIOSH 2003 Anthropometric Survey (3,997 subjects)
         """)
         
-        if st.button("Start Over", use_container_width=True):
+        if st.button("Start Over", width="stretch"):
             # Keep subject info and available masks
             name = st.session_state.subject_name
             dob = st.session_state.subject_dob
@@ -1028,7 +1026,7 @@ def show_face_scan():
                 image_np = np.array(image)
                 
                 # Show original image
-                st.image(image_np, caption="Original Image", use_container_width=True)
+                st.image(image_np, caption="Original Image", width="stretch")
                 
                 # Try automatic detection
                 with st.spinner("Detecting credit card (trying multiple methods)..."):
@@ -1038,7 +1036,7 @@ def show_face_scan():
                 if calibration_factor and 'force_manual' not in st.session_state:
                     # Auto-detection succeeded
                     annotated = CreditCardCalibration.draw_card_detection(image_np, card_rect)
-                    st.image(annotated, caption="Auto-Detected Card", use_container_width=True)
+                    st.image(annotated, caption="Auto-Detected Card", width="stretch")
                     
                     x, y, w, h = card_rect
                     st.success("Auto-detection successful!")
@@ -1046,7 +1044,7 @@ def show_face_scan():
                     
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
-                        if st.button("✓ Use This", type="primary", use_container_width=True):
+                        if st.button("✓ Use This", type="primary", width="stretch"):
                             # Step 1: Store card calibration
                             st.session_state.calibration_factor = calibration_factor
                             st.session_state.calibration_image = image_np
@@ -1067,7 +1065,7 @@ def show_face_scan():
                                 del st.session_state.force_manual
                             st.rerun()
                     with col_btn2:
-                        if st.button("Adjust Manually", use_container_width=True):
+                        if st.button("Adjust Manually", width="stretch"):
                             st.session_state.force_manual = True
                             st.session_state.manual_rect = card_rect
                             st.rerun()
@@ -1091,7 +1089,7 @@ def show_face_scan():
                     # Show current rectangle
                     current_rect = st.session_state.manual_rect
                     annotated = CreditCardCalibration.draw_card_detection(image_np, current_rect)
-                    st.image(annotated, caption="Adjust Rectangle to Match Card", use_container_width=True)
+                    st.image(annotated, caption="Adjust Rectangle to Match Card", width="stretch")
                     
                     # Manual adjustment sliders
                     st.markdown("**Drag sliders to match card edges:**")
@@ -1131,7 +1129,7 @@ def show_face_scan():
                     
                     col_use, col_reset = st.columns(2)
                     with col_use:
-                        if st.button("✓ Use This Calibration", type="primary", use_container_width=True):
+                        if st.button("✓ Use This Calibration", type="primary", width="stretch"):
                             # Step 1: Store card calibration factor
                             st.session_state.calibration_factor = manual_factor
                             st.session_state.calibration_image = image_np
@@ -1157,7 +1155,7 @@ def show_face_scan():
                                 del st.session_state.manual_rect
                             st.rerun()
                     with col_reset:
-                        if st.button("Skip Calibration", use_container_width=True):
+                        if st.button("Skip Calibration", width="stretch"):
                             st.session_state.calibration_factor = 140 / 180
                             st.session_state.pupillary_distance_mm = AVERAGE_PD_MM
                             if 'force_manual' in st.session_state:
@@ -1227,7 +1225,7 @@ def show_face_scan():
                     st.info(f"✓ PD detected: {pd_pixels_face:.1f}px → Calibration: {face_calibration:.4f} mm/px")
                     
                     # Show pupil detection
-                    st.image(pd_annotated, caption="Pupil Detection", use_container_width=True)
+                    st.image(pd_annotated, caption="Pupil Detection", width="stretch")
                     
                     # Step 3: Measure face with THIS image's calibration
                     with st.spinner("Measuring facial features..."):
@@ -1244,7 +1242,7 @@ def show_face_scan():
                             st.success("Face detected and analyzed successfully!")
                             
                             # Show annotated image
-                            st.image(annotated_image, caption="Detected Facial Landmarks", use_container_width=True)
+                            st.image(annotated_image, caption="Detected Facial Landmarks", width="stretch")
                             
                             # Show measurements
                             st.markdown("### Detected Measurements")
@@ -1268,11 +1266,11 @@ def show_face_scan():
                             
                             col_btn1, col_btn2 = st.columns(2)
                             with col_btn1:
-                                if st.button("Continue to Analysis", type="primary", use_container_width=True):
+                                if st.button("Continue to Analysis", type="primary", width="stretch"):
                                     st.session_state.current_step = 2
                                     st.rerun()
                             with col_btn2:
-                                if st.button("Adjust Manually", use_container_width=True):
+                                if st.button("Adjust Manually", width="stretch"):
                                     st.session_state.manual_face_adjust = True
                                     # Store initial auto-detected measurements as starting point
                                     st.session_state.face_measurement_points = {
@@ -1285,7 +1283,7 @@ def show_face_scan():
                             st.info("Manual adjustment mode - fine-tune the measurements below")
                             
                             # Show image
-                            st.image(annotated_image, caption="Face Detection", use_container_width=True)
+                            st.image(annotated_image, caption="Face Detection", width="stretch")
                             
                             # Get starting values
                             if st.session_state.face_measurement_points:
@@ -1339,13 +1337,13 @@ def show_face_scan():
                             
                             col_use, col_reset = st.columns(2)
                             with col_use:
-                                if st.button("✓ Use These Measurements", type="primary", use_container_width=True):
+                                if st.button("✓ Use These Measurements", type="primary", width="stretch"):
                                     st.session_state.measurements = manual_measurements
                                     st.session_state.manual_face_adjust = False
                                     st.session_state.current_step = 2
                                     st.rerun()
                             with col_reset:
-                                if st.button("Reset to Auto-Detect", use_container_width=True):
+                                if st.button("Reset to Auto-Detect", width="stretch"):
                                     st.session_state.manual_face_adjust = False
                                     st.rerun()
                     else:
@@ -1359,7 +1357,7 @@ def show_face_scan():
                     - Try removing glasses if wearing them
                     """)
                     
-                    if st.button("Use Default Calibration", use_container_width=True):
+                    if st.button("Use Default Calibration", width="stretch"):
                         # Fall back to card calibration if PD detection fails
                         with st.spinner("Analyzing with default calibration..."):
                             face_measurer = FaceMeasurement(calibration_factor=st.session_state.calibration_factor)
@@ -1383,7 +1381,7 @@ def show_face_scan():
             **Benefit:** Distance doesn't matter! Move closer or farther - measurements stay accurate.
             """)
             
-            if st.button("Recalibrate", use_container_width=True):
+            if st.button("Recalibrate", width="stretch"):
                 st.session_state.calibration_factor = None
                 st.session_state.calibration_image = None
                 st.rerun()
@@ -1507,11 +1505,11 @@ def show_analysis():
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Back to Face Scan", use_container_width=True):
+        if st.button("Back to Face Scan", width="stretch"):
             st.session_state.current_step = 1
             st.rerun()
     with col2:
-        if st.button("Continue to Fit Test", type="primary", use_container_width=True):
+        if st.button("Continue to Fit Test", type="primary", width="stretch"):
             st.session_state.current_step = 3
             st.rerun()
 
@@ -1682,11 +1680,11 @@ def show_fit_test():
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Back to Analysis", use_container_width=True):
+        if st.button("Back to Analysis", width="stretch"):
             st.session_state.current_step = 2
             st.rerun()
     with col2:
-        if st.button("Start New Fitting", use_container_width=True):
+        if st.button("Start New Fitting", width="stretch"):
             # Keep subject info and available masks
             name = st.session_state.subject_name
             dob = st.session_state.subject_dob
