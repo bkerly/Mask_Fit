@@ -513,6 +513,72 @@ class CreditCardCalibration:
         return image
 
 
+def draw_manual_measurements(image, bizyg_mm, mensell_mm, calibration_factor):
+    """
+    Draw adjustable measurement lines on face image based on mm values
+    Returns annotated image showing where measurements should align
+    """
+    annotated = image.copy()
+    h, w = image.shape[:2]
+    
+    # Convert mm back to pixels for this image
+    bizyg_px = bizyg_mm / calibration_factor
+    mensell_px = mensell_mm / calibration_factor
+    
+    # Assume face is centered and roughly occupies 60% of image width
+    center_x = w // 2
+    center_y = h // 2
+    
+    # Draw bizygomatic breadth (horizontal line at mid-face)
+    # Position at ~50% of image height (cheekbone level)
+    bizyg_y = int(h * 0.50)
+    bizyg_left_x = int(center_x - bizyg_px / 2)
+    bizyg_right_x = int(center_x + bizyg_px / 2)
+    
+    # Ensure points are within image bounds
+    bizyg_left_x = max(10, min(bizyg_left_x, w - 10))
+    bizyg_right_x = max(10, min(bizyg_right_x, w - 10))
+    
+    # Draw bizygomatic line (bright green, thick)
+    cv2.line(annotated, (bizyg_left_x, bizyg_y), (bizyg_right_x, bizyg_y), (0, 255, 0), 4)
+    cv2.circle(annotated, (bizyg_left_x, bizyg_y), 8, (0, 255, 0), -1)
+    cv2.circle(annotated, (bizyg_right_x, bizyg_y), 8, (0, 255, 0), -1)
+    
+    # Add label
+    cv2.putText(annotated, f"Bizyg: {bizyg_mm:.1f}mm", 
+               (bizyg_left_x - 100, bizyg_y - 15),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    
+    # Draw menton-sellion (vertical line)
+    # Top point: nose bridge (~35% from top)
+    # Bottom point: chin (~90% from top)
+    mensell_top_y = int(h * 0.35)
+    mensell_bottom_y = int(mensell_top_y + mensell_px)
+    
+    # Ensure points are within image bounds
+    mensell_bottom_y = min(mensell_bottom_y, h - 10)
+    
+    # Draw menton-sellion line (bright blue, thick)
+    cv2.line(annotated, (center_x, mensell_top_y), (center_x, mensell_bottom_y), (255, 0, 0), 4)
+    cv2.circle(annotated, (center_x, mensell_top_y), 8, (255, 0, 0), -1)
+    cv2.circle(annotated, (center_x, mensell_bottom_y), 8, (255, 0, 0), -1)
+    
+    # Add label
+    cv2.putText(annotated, f"Mensell: {mensell_mm:.1f}mm", 
+               (center_x + 15, (mensell_top_y + mensell_bottom_y) // 2),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    
+    # Add reference guidelines
+    cv2.putText(annotated, "Adjust sliders so lines match your face:", 
+               (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(annotated, "GREEN = Cheekbone width", 
+               (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.putText(annotated, "BLUE = Chin to nose bridge", 
+               (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    
+    return annotated
+
+
 class FaceMeasurement:
     """Class to handle face measurement using MediaPipe FaceLandmarker (new API)"""
     
@@ -1280,10 +1346,16 @@ def show_face_scan():
                                     st.rerun()
                         else:
                             # Manual adjustment mode
-                            st.info("Manual adjustment mode - fine-tune the measurements below")
-                            
-                            # Show image
-                            st.image(annotated_image, caption="Face Detection", width="stretch")
+                            st.markdown("""
+                            <div class="info-box">
+                            <strong>Manual Adjustment Mode</strong>
+                            <p>Use the sliders below to adjust the measurement lines on your face image.</p>
+                            <ul>
+                                <li><strong style="color: #00ff00;">GREEN line:</strong> Bizygomatic Breadth - should align with widest part of cheekbones (temple to temple)</li>
+                                <li><strong style="color: #0000ff;">BLUE line:</strong> Menton-Sellion - should go from chin to nose bridge (between eyes)</li>
+                            </ul>
+                            </div>
+                            """, unsafe_allow_html=True)
                             
                             # Get starting values
                             if st.session_state.face_measurement_points:
@@ -1293,28 +1365,40 @@ def show_face_scan():
                                 start_bizyg = measurements['bizygomatic_breadth']
                                 start_mensell = measurements['menton_sellion']
                             
+                            # Sliders BEFORE image so changes trigger rerun and update image
                             st.markdown("**Adjust measurements using the sliders:**")
-                            st.caption("Typical ranges: Bizygomatic 120-170mm, Menton-Sellion 100-140mm")
-                            
                             col_adj1, col_adj2 = st.columns(2)
                             with col_adj1:
                                 manual_bizyg = st.slider(
-                                    "Bizygomatic Breadth (mm)",
+                                    "🟢 Bizygomatic Breadth (mm)",
                                     min_value=100.0,
                                     max_value=180.0,
                                     value=float(start_bizyg),
                                     step=0.5,
+                                    help="Adjust so GREEN line matches your cheekbone width",
                                     key="manual_bizyg"
                                 )
                             with col_adj2:
                                 manual_mensell = st.slider(
-                                    "Menton-Sellion Length (mm)",
+                                    "🔵 Menton-Sellion Length (mm)",
                                     min_value=80.0,
                                     max_value=150.0,
                                     value=float(start_mensell),
                                     step=0.5,
+                                    help="Adjust so BLUE line goes from chin to nose bridge",
                                     key="manual_mensell"
                                 )
+                            
+                            # Draw measurements on image with current slider values
+                            manual_annotated = draw_manual_measurements(
+                                image_np, 
+                                manual_bizyg, 
+                                manual_mensell, 
+                                face_calibration
+                            )
+                            
+                            # Show updated image with measurement overlays
+                            st.image(manual_annotated, caption="Adjust sliders until lines match your face", width="stretch")
                             
                             # Create manual measurements
                             manual_measurements = {
@@ -1326,14 +1410,16 @@ def show_face_scan():
                             st.markdown("### Current Measurements")
                             col_m1, col_m2 = st.columns(2)
                             with col_m1:
-                                st.metric("Bizygomatic Breadth", f"{manual_bizyg:.1f} mm")
+                                st.metric("Bizygomatic Breadth", f"{manual_bizyg:.1f} mm", 
+                                         delta=f"{manual_bizyg - start_bizyg:+.1f} mm from auto-detect")
                             with col_m2:
-                                st.metric("Menton-Sellion Length", f"{manual_mensell:.1f} mm")
+                                st.metric("Menton-Sellion Length", f"{manual_mensell:.1f} mm",
+                                         delta=f"{manual_mensell - start_mensell:+.1f} mm from auto-detect")
                             
                             # Show which NIOSH category this would give
                             temp_recommender = MaskRecommender()
                             temp_category, temp_confidence = temp_recommender.categorize_face(manual_measurements)
-                            st.info(f"**NIOSH Category:** {temp_category.replace('_', ' ').title()} ({temp_confidence:.0f}% confidence)")
+                            st.success(f"**NIOSH Category:** {temp_category.replace('_', ' ').title()} ({temp_confidence:.0f}% confidence)")
                             
                             col_use, col_reset = st.columns(2)
                             with col_use:
