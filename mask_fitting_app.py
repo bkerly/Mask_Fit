@@ -702,15 +702,14 @@ class FaceMeasurement:
         x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
         
         # Estimate measurements based on face rectangle
+        # Only bizygomatic_breadth and menton_sellion are needed for NIOSH sizing
         face_width_px = fw
         face_height_px = fh
         
         # Approximate key measurements
         measurements = {
             'bizygomatic_breadth': face_width_px * self.calibration_factor * 0.9,  # Face width at cheekbones
-            'menton_sellion': face_height_px * self.calibration_factor * 0.65,     # Chin to nose bridge
-            'face_width': face_width_px * self.calibration_factor,
-            'face_length': face_height_px * self.calibration_factor,
+            'menton_sellion': face_height_px * self.calibration_factor * 0.65,     # Chin to nose bridge  
         }
         
         # Draw rectangle on face
@@ -739,20 +738,16 @@ class FaceMeasurement:
         return pixel_distance * self.calibration_factor
     
     def _calculate_measurements(self, landmarks, w, h):
-        """Extract key facial measurements"""
+        """Extract key facial measurements for NIOSH categorization"""
+        # Only bizygomatic_breadth and menton_sellion are used for mask sizing
         # MediaPipe Face Mesh key landmarks:
-        # 454, 234: Bizygomatic breadth (cheekbone to cheekbone - widest part)
-        # 127, 356: Face outline at eye level (slightly wider than bizygomatic)
+        # 454, 234: Bizygomatic breadth (cheekbone to cheekbone)
         # 152: Chin (menton)
-        # 6: Nose bridge/sellion
-        # 10: Forehead top
-        # 152 to 10: Full face length (chin to forehead)
+        # 6: Nose bridge (sellion)
         
         measurements = {
             'bizygomatic_breadth': self._calculate_distance(landmarks[454], landmarks[234], w, h),
             'menton_sellion': self._calculate_distance(landmarks[152], landmarks[6], w, h),
-            'face_width': self._calculate_distance(landmarks[127], landmarks[356], w, h),  # Wider measurement
-            'face_length': self._calculate_distance(landmarks[152], landmarks[10], w, h),
         }
         
         return measurements
@@ -879,9 +874,7 @@ def generate_pdf_report(subject_name, subject_dob, measurements, recommendation,
     meas_data = [
         ['Measurement', 'Value (mm)'],
         ['Bizygomatic Breadth', f"{measurements['bizygomatic_breadth']:.1f}"],
-        ['Menton-Sellion Length', f"{measurements['menton_sellion']:.1f}"],
-        ['Face Width', f"{measurements['face_width']:.1f}"],
-        ['Face Length', f"{measurements['face_length']:.1f}"]
+        ['Menton-Sellion Length', f"{measurements['menton_sellion']:.1f}"]
     ]
     meas_table = Table(meas_data, colWidths=[3*inch, 2*inch])
     meas_table.setStyle(TableStyle([
@@ -895,6 +888,10 @@ def generate_pdf_report(subject_name, subject_dob, measurements, recommendation,
         ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
     story.append(meas_table)
+    
+    # Add note
+    note_text = "<para fontSize='10' textColor='#666'><em>Note: These two measurements are the standard NIOSH anthropometric dimensions used for respirator sizing.</em></para>"
+    story.append(Paragraph(note_text, styles['Normal']))
     story.append(Spacer(1, 0.3*inch))
     
     # NIOSH Category
@@ -1318,10 +1315,10 @@ def show_face_scan():
                         col_a, col_b = st.columns(2)
                         with col_a:
                             st.metric("Bizygomatic Breadth", f"{measurements['bizygomatic_breadth']:.1f} mm")
-                            st.metric("Face Width", f"{measurements['face_width']:.1f} mm")
                         with col_b:
-                            st.metric("Menton-Sellion", f"{measurements['menton_sellion']:.1f} mm")
-                            st.metric("Face Length", f"{measurements['face_length']:.1f} mm")
+                            st.metric("Menton-Sellion Length", f"{measurements['menton_sellion']:.1f} mm")
+                        
+                        st.info("These are the two key measurements used for NIOSH mask sizing")
                         
                         st.markdown(f"""
                         <div class="info-box">
@@ -1422,16 +1419,11 @@ def show_analysis():
                     <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Menton-Sellion Length</td>
                     <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['menton_sellion']:.1f}</td>
                 </tr>
-                <tr style="background-color: #f9f9f9;">
-                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Face Width</td>
-                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['face_width']:.1f}</td>
-                </tr>
-                <tr style="background-color: white;">
-                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">Face Length</td>
-                    <td style="padding: 10px; border: 1px solid #ddd; color: #262730;">{measurements['face_length']:.1f}</td>
-                </tr>
             </tbody>
         </table>
+        <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+        <em>Note: Only these two measurements are used for NIOSH respirator sizing</em>
+        </p>
         """
         st.markdown(measurements_html, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
