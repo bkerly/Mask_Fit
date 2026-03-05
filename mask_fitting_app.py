@@ -715,57 +715,66 @@ class FaceMeasurement:
         
         # Estimate measurements based on face rectangle
         # Only bizygomatic_breadth and menton_sellion are needed for NIOSH sizing
-        face_width_px = fw
+        # Note: Haar cascade rectangle includes ears, so we need to narrow it
+        face_width_px = fw * 0.75  # Cheekbones are ~75% of rectangle width (excludes ears)
         face_height_px = fh
         
         # Approximate key measurements
         measurements = {
-            'bizygomatic_breadth': face_width_px * self.calibration_factor * 0.9,  # Face width at cheekbones
+            'bizygomatic_breadth': face_width_px * self.calibration_factor,  # Cheekbone width (narrower)
             'menton_sellion': face_height_px * self.calibration_factor * 0.65,     # Chin to nose bridge  
         }
         
         # Draw enhanced visualization (mesh-like for reassurance)
         annotated_image = image.copy()
         
-        # Draw face outline
-        cv2.rectangle(annotated_image, (x, y), (x+fw, y+fh), (0, 255, 0), 2)
+        # Draw face outline (full rectangle)
+        cv2.rectangle(annotated_image, (x, y), (x+fw, y+fh), (100, 100, 100), 1)  # Gray, thin
         
-        # Draw facial feature grid lines
+        # Calculate actual measurement positions
         center_x = x + fw // 2
+        cheek_y = y + int(fh * 0.50)
         
-        # Horizontal lines (facial regions)
+        # Bizygomatic breadth is narrower than full face width (excludes ears)
+        bizyg_inset = int(fw * 0.125)  # 12.5% inset on each side = 75% total width
+        bizyg_left_x = x + bizyg_inset
+        bizyg_right_x = x + fw - bizyg_inset
+        
+        # Draw facial feature grid lines (lighter)
         forehead_y = y + int(fh * 0.15)
         eyes_y = y + int(fh * 0.35)
         nose_y = y + int(fh * 0.50)
         mouth_y = y + int(fh * 0.70)
         chin_y = y + fh
         
+        # Horizontal lines (facial regions) - lighter gray
         for h_y in [forehead_y, eyes_y, nose_y, mouth_y]:
-            cv2.line(annotated_image, (x, h_y), (x+fw, h_y), (0, 200, 0), 1)
+            cv2.line(annotated_image, (x, h_y), (x+fw, h_y), (150, 150, 150), 1)
         
-        # Vertical lines (facial symmetry)
+        # Vertical lines (facial symmetry) - lighter gray
         left_x = x + int(fw * 0.25)
         right_x = x + int(fw * 0.75)
         
-        cv2.line(annotated_image, (center_x, y), (center_x, y+fh), (0, 255, 0), 1)  # Center line
-        cv2.line(annotated_image, (left_x, y), (left_x, y+fh), (0, 200, 0), 1)
-        cv2.line(annotated_image, (right_x, y), (right_x, y+fh), (0, 200, 0), 1)
+        cv2.line(annotated_image, (center_x, y), (center_x, y+fh), (150, 150, 150), 1)  # Center line
+        cv2.line(annotated_image, (left_x, y), (left_x, y+fh), (150, 150, 150), 1)
+        cv2.line(annotated_image, (right_x, y), (right_x, y+fh), (150, 150, 150), 1)
         
-        # Draw key measurement lines (brighter)
-        # Bizygomatic breadth (cheekbone width)
-        cheek_y = y + int(fh * 0.50)
-        cv2.line(annotated_image, (x, cheek_y), (x+fw, cheek_y), (0, 255, 0), 3)
-        cv2.circle(annotated_image, (x, cheek_y), 6, (0, 255, 0), -1)
-        cv2.circle(annotated_image, (x+fw, cheek_y), 6, (0, 255, 0), -1)
+        # Draw key measurement lines (bright green, thick)
+        # Bizygomatic breadth (cheekbone width - NARROWER than full face)
+        cv2.line(annotated_image, (bizyg_left_x, cheek_y), (bizyg_right_x, cheek_y), (0, 255, 0), 3)
+        cv2.circle(annotated_image, (bizyg_left_x, cheek_y), 6, (0, 255, 0), -1)
+        cv2.circle(annotated_image, (bizyg_right_x, cheek_y), 6, (0, 255, 0), -1)
         
-        # Menton-sellion length (chin to nose)
+        # Menton-sellion length (chin to nose bridge)
         cv2.line(annotated_image, (center_x, chin_y), (center_x, eyes_y), (0, 255, 0), 3)
         cv2.circle(annotated_image, (center_x, chin_y), 6, (0, 255, 0), -1)  # Chin
         cv2.circle(annotated_image, (center_x, eyes_y), 6, (0, 255, 0), -1)  # Nose bridge
         
         # Add labels
-        cv2.putText(annotated_image, "Bizyg", (x - 60, cheek_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        cv2.putText(annotated_image, "Mensell", (center_x + 10, (chin_y + eyes_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(annotated_image, "Bizyg", (bizyg_left_x - 60, cheek_y + 5), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(annotated_image, "Mensell", (center_x + 10, (chin_y + eyes_y) // 2), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         return measurements, annotated_image
     
